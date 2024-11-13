@@ -1,0 +1,36 @@
+# Python virtual environment
+venv/
+env/
+.env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Database
+*.sqlite3
+*.db
+
+# Environment variables
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Local development settings
+*.log
+.DS_Store
