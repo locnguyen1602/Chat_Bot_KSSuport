@@ -2,11 +2,6 @@
 venv/
 env/
 .env/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
 *.so
 
 # IDE settings
