@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from json import tool
 import os
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from llama_index.llms.langchain import LangChainLLM
 from llama_index.core.tools import FunctionTool, ToolOutput
 from llama_index.core.agent import ReActAgent, FunctionCallingAgentWorker
 from llama_index.core.agent.react.formatter import ReActChatFormatter
+from llama_index.core.schema import NodeWithScore, TextNode
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
 from langchain_community.chat_models import ChatOllama
@@ -32,6 +34,14 @@ from .chat_memory import chat_history
 
 
 class EnhancedLLMService:
+
+    @dataclass
+    class ToolResponse:
+        content: str
+        source_nodes: List[NodeWithScore]
+        metadata: Optional[Dict] = None
+        images: Optional[List[Dict]] = None
+
     def __init__(self):
         # Initialize Database MySQL
         try:
@@ -146,136 +156,219 @@ class EnhancedLLMService:
     def setup_tools_and_agent(self):
         """Initialize tools and agent using LlamaIndex"""
         try:
-            # Define tools using FunctionTool TimeZone
+            # Define timezone tool
             timezone_tool = FunctionTool.from_defaults(
                 fn=self.tools_list["get_time_timezone"],
                 name="get_time_timezone",
-                description="Get current time for a specific timezone (e.g., Asia/Tokyo). Only use when asked about time in specific timezone.",
+                description="""ONLY USE for timezone/time queries:
+                - When users ask about current time in specific locations
+                - Automatically converts city names to correct timezone format
+                
+                Common time-related questions:
+                - Current time queries: "What time is it in [location]?"
+                - Time difference questions: "What's the time in [location] now?"
+                - Time check requests: "Tell me the time in [location]"
+                - Local time inquiries: "Current local time in [location]"
+                
+                Supported Regions & Examples:
+                Asia:
+                - "What's the time in Tokyo right now?"
+                - "Current time in HoChiMinh city?"
+                - "Tell me the time in Singapore"
+                - "What time is it in Bangkok?"
+                - "Local time in Hanoi?"
+                
+                America:
+                - "What time is it in New York?"
+                - "Current time in Los Angeles"
+                - "Time in Chicago now?"
+                - "Tell me the time in San Francisco"
+                
+                Europe:
+                - "What's the current time in London?"
+                - "Time in Paris right now?"
+                - "What time is it in Berlin?"
+                - "Current time in Rome?"
+                
+                Example variations:
+                - "Could you tell me what time it is in Tokyo?"
+                - "I need to know the current time in London"
+                - "What's the local time in New York City?"
+                - "Do you know what time it is in Singapore?"
+                - "Show me the current time in Paris"
+                - "Check the time in HoChiMinh for me"
+                
+                Note: Always include a specific city name for accurate timezone conversion.""",
             )
 
-            # Define tools using FunctionTool Weather
+            # Define weather tool
             weather_tool = FunctionTool.from_defaults(
                 fn=self.tools_list["get_weather"],
                 name="get_weather",
-                description="Get current weather information for a specific location. Only use when asked about weather conditions.",
+                description="""ONLY USE for weather queries:
+                - When users ask about current weather conditions
+                - Must have a specific location in the query
+                
+                Common question patterns:
+                - Asking about general weather: "How's the weather in [location]?"
+                - Temperature queries: "What's the temperature in [location]?"
+                - Humidity questions: "How humid is it in [location]?"
+                - Wind conditions: "Is it windy in [location]?"
+                - Current conditions: "Is it raining in [location]?"
+                
+                Supported cities examples:
+                - Vietnam: HoChiMinh, Hanoi, DaNang
+                - Japan: Tokyo, Osaka, Kyoto
+                - Others: Singapore, Bangkok, London, NewYork
+
+                Examples:
+                - "Weather in HoChiMinh?" → Vietnam/Ho Chi Minh
+                - "Temperature in Tokyo?" → Japan/Tokyo
+                - "Current weather in Hanoi?"
+                - "How hot is it in Singapore?"
+                
+                Note: Always include a specific city or location in your query.""",
             )
 
-            # Define tools using FunctionTool Product Information
+            # Define product tool
             product_tool = FunctionTool.from_defaults(
                 fn=self.get_information_product,
                 name="get_information_product",
-                description="Get detailed product information by product name or code (e.g., K-1S, 化粧箱K-1, ｹｼｮｳﾊﾞｺｹｲｲﾁ). Only use when asked about specific products.",
+                description="""MUST USE for ANY product-related queries:
+                - When query contains product codes
+                - When asking about product details or information
+                
+                Input: Directly use product code or name as string (not dict)
+                
+                Examples:
+                ✓ "K-1S"  # Correct - direct string
+                ✓ "化粧箱K-1" 
+                ✗ {"product_name": "K-1S"}  # Wrong - don't use dict
+                
+                Common queries:
+                - "What is K-1S?"
+                - "Tell me about product K-1S"
+                - "K-1S specifications"
+                - "化粧箱K-1 details"
+                - "Find product K-1S"
+                - "Information about K-1S"
+                """,
             )
 
             # Define tools using FunctionTool PDF - Điều chỉnh mô tả chi tiết hơn
             pdf_tool = FunctionTool.from_defaults(
                 fn=self._search_pdf_content,
                 name="search_pdf",
-                description="Search through PDF content for relevant information. MUST USE when: 1) Asked about any documentation or manuals, 2) Need to find specific text or content, 3) Questions about procedures/policies, 4) When product information alone is not sufficient.",
+                description="""MUST USE when query contains:
+                1. Instruction phrases:
+                    - "how to", "guide to", "steps to", "way to", "process of"
+                    - "what is the process", "how do I", "show me how"
+                    - Instructions/procedures/documentation
+                    
+                2. System & Features:
+                    - System features/functionality/settings
+                    - Screens/menus/options/configurations
+                    - Create/add/update/modify/delete
+                    
+                3. Documentation needs:
+                    - Manuals/guides/help documents
+                    - Technical information/specifications
+                    - Operating procedures/workflows
+
+                Example matches:
+                - "How to add new screen in menu"
+                - "What is the process for setting up"
+                - "Guide to system configuration"
+                - "Steps to update user settings"
+                """,
             )
 
             # Define conversation tool using chat_conversation function
             chat_tool = FunctionTool.from_defaults(
                 fn=self.chat_conversation,
                 name="general_chat",
-                description="Handle general conversation, greetings, and casual queries. Use this for normal conversation, greetings, and when no other tools are needed.",
+                description="""ONLY USE as last resort:
+                - For basic greetings ("Hello", "Hi")
+                - For general conversation
+                - When NO OTHER TOOLS apply
+                Do NOT use if query could be handled by other tools
+                """,
             )
 
             # Add chat_conversation to tools_list
             self.tools_list["general_chat"] = self.chat_conversation
 
-            # Define system prompt for the agent
-            system_prompt = """You are a helpful and friendly AI assistant named KSSupport. Your main purpose is to assist users with product information, document searches, and general inquiries.
+            # Define custom prompting rules
+            custom_prompt = """You are a specialized agent that follows strict rules for tool selection:
 
-            TOOLS AND THEIR USES (In Order of Priority):
+            TOOL SELECTION RULES:
 
-            1. For product information (HIGHEST PRIORITY - use get_information_product first):
-            - Always check product information first for any product-related queries
-            - Use for any question about products, even partial matches
-            - Must use for queries containing:
-                * Product codes (e.g., K-1S, K-2S)
-                * Product names (e.g., 化粧箱K-1, ｹｼｮｳﾊﾞｺｹｲｲﾁ)
-                * Words like "product", "item", "what is", "tell me about"
-            Example queries:
-            - "What is K-1S?"
-            - "Tell me about K-1S"
-            - "K-1S specification"
-            - "Show me product K-1S"
-            - "What's the information for 化粧箱K-1?"
-            - "ｹｼｮｳﾊﾞｺｹｲｲﾁ details"
+            1. PRODUCT QUERIES (HIGHEST PRIORITY):
+            - ALWAYS use get_information_product first if query mentions:
+                * Any product code (K-1S, etc.)
+                * Product names (化粧箱K-1, etc.)
+                * Words like "product", "item"
+            - Example thought: "This query mentions a product code K-1S, I must use get_information_product"
 
-            2. For document searches (EQUALLY HIGH PRIORITY - use search_pdf for any content queries):
-            - MUST USE when users ask:
-                * About any documentation, manuals, or guides
-                * For specific text or content searches
-                * About procedures, policies, or instructions
-                * Questions starting with "where can I find", "how to", "what are the steps"
-                * When looking for detailed explanations
-                * When product information alone isn't enough
-            Example queries:
-            - "How do I process a return?"
-            - "What are the steps for ordering?"
-            - "Where can I find information about X?"
-            - "What does the manual say about Y?"
-            - "Tell me about the process of Z"
-            - "Find information about product usage"
-            - "Search for policy regarding X"
-            - "List some rules of KSS company"
+            2. DOCUMENTATION AND INSTRUCTION QUERIES (HIGH PRIORITY):
+            - MUST use search_pdf for:
+                * ANY query starting with "how to", "guide to", "steps to"
+                * Questions about procedures or processes
+                * Questions about system features or functionality
+                * When user needs instructions or guidance
+            - Example queries that MUST use search_pdf:
+                * "How to add new screen in menu"
+                * "Steps to update records"
+                * "Guide to system configuration"
+            - Example thought: "This query asks how to do something, I must use search_pdf"
 
-            3. For timezone queries (use get_time_timezone):
-            - Only for specific timezone questions
-            - Convert locations to timezone format (e.g., "Tokyo" → "Asia/Tokyo")
+            3. SPECIFIC SERVICES:
+            - Use get_time_timezone ONLY for explicit time/timezone questions
+            - Use get_weather ONLY for explicit weather questions
+            - Example thought: "This is asking about weather in Tokyo, I should use get_weather"
 
-            4. For weather information (use get_weather):
-            - Only for specific weather condition queries
-            - When location is clearly specified
+            4. GENERAL CONVERSATION (LAST RESORT):
+            - Use general_chat ONLY if NO other tools apply
+            - Example thought: "No specific tools match this query, I can use general_chat"
 
-            5. For general conversation (LAST RESORT - only use general_chat if no other tools match):
-            - Use only when no other tools are applicable
-            - Handle basic greetings and general questions
-            - Example queries:
-                * "Hello!"
-                * "How are you?"
-                * "What can you do?"
+            DECISION PROCESS (MUST FOLLOW IN ORDER):
+            1. First, CHECK FOR PRODUCTS:
+            - If query contains ANY product references → use get_information_product
+            - Example: "What is K-1S?" → use get_information_product
 
-            DECISION MAKING PRIORITY:
-            1. ALWAYS check product information first:
-            - For ANY mention of products or codes
-            - Even for partial or unclear product references
-            - When in doubt about a product query, use get_information_product
+            2. Then, CHECK FOR INSTRUCTIONS/DOCUMENTATION:
+            - If query asks "how to" or needs guidance → use search_pdf
+            - If query needs system information → use search_pdf
+            - Example: "How to add screen" → use search_pdf
 
-            2. If not product-related, check document content:
-            - For any detailed information needs
-            - For technical queries
-            - For process or procedure questions
+            3. Next, CHECK FOR SPECIFIC SERVICES:
+            - If about time/timezone → use get_time_timezone
+            - If about weather → use get_weather
+            - Example: "Weather in Tokyo" → use get_weather
 
-            3. For specific service queries:
-            - Use timezone tool for time-related questions
-            - Use weather tool for weather-related questions
-
-            4. ONLY as last resort:
-            - Use general_chat if no other tools are applicable
-            - When query is clearly just casual conversation
+            4. Finally, IF NOTHING ELSE MATCHES:
+            - Only then use general_chat
+            - Example: "Hello" → use general_chat
 
             For unclear queries:
-            1. First try get_information_product if might be product-related
-            2. Then try search_pdf for possible document content
+            1. Try get_information_product if might be product-related
+            2. Try search_pdf if might need documentation
             3. Check if timezone or weather specific
             4. Only then default to general_chat
 
-            Remember:
-            - Products and document searches are TOP PRIORITY
-            - Always check product information first for any possible product reference
-            - Use search_pdf for detailed information needs
-            - Only use general_chat when NO OTHER TOOLS apply
-            - Keep responses professional and helpful"""
+            IMPORTANT RULES:
+            - Always explain your reasoning before selecting a tool
+            - Follow the decision process strictly in order
+            - If query mentions "how to", MUST use search_pdf
+            - Never skip steps in the decision process
+            - Be explicit about why you chose a particular tool"""
 
             # Initialize ReAct agent with updated tools and prompt
             self.agent = ReActAgent.from_tools(
-                tools=[chat_tool, timezone_tool, weather_tool, product_tool, pdf_tool],
+                tools=[product_tool, pdf_tool, timezone_tool, weather_tool, chat_tool],
                 llm=self.llm,
                 verbose=True,
-                system_prompt=system_prompt,
+                system_prompt=custom_prompt,
                 formatter=ReActChatFormatter(),
             )
 
@@ -288,42 +381,33 @@ class EnhancedLLMService:
     def process_image(
         self, pil_image: Image.Image, analysis_text: str = None
     ) -> np.ndarray:
-        """Process image và kết hợp cả CLIP embedding và analysis embedding"""
+        """
+        Process image using CLIP embedding (768 dimensions).
+        Returns normalized embedding vector or None if processing fails.
+        """
         try:
-            # 1. Get CLIP embedding
+            # Convert image if needed
             if pil_image.mode not in ["RGB", "L"]:
                 pil_image = pil_image.convert("RGB")
 
-            inputs = self.clip_processor(images=pil_image, return_tensors="pt")
+            # Get CLIP embedding (768 dimensions)
+            inputs = self.clip_processor(
+                text=analysis_text, images=pil_image, return_tensors="pt"
+            )
             with torch.no_grad():
                 image_features = self.clip_model.get_image_features(**inputs)
 
-            clip_embedding = image_features.numpy()[0]
-            clip_embedding = clip_embedding / np.linalg.norm(clip_embedding)
+            # Extract and normalize embedding
+            embedding = image_features.numpy()[0]
+            embedding = embedding / np.linalg.norm(embedding)
 
-            # 2. Get analysis text embedding nếu có
-            if analysis_text:
-                analysis_embedding = np.array(
-                    self.embedding_model.embed_query(analysis_text)
-                )
-                analysis_embedding = analysis_embedding / np.linalg.norm(
-                    analysis_embedding
-                )
-
-                # 3. Combine embeddings (weighted average)
-                combined_embedding = (0.5 * clip_embedding) + (0.5 * analysis_embedding)
-                combined_embedding = combined_embedding / np.linalg.norm(
-                    combined_embedding
-                )
-
-                return combined_embedding
-
-            return clip_embedding
+            return embedding
 
         except Exception as e:
             print(f"Error in process_image: {e}")
             return None
 
+    # Extract image and analyza image with LlaVa
     def _analyze_image_with_llava(self, image_bytes: bytes) -> Optional[str]:
         """Analyze image using LLaVA with correct message format"""
         try:
@@ -371,8 +455,8 @@ class EnhancedLLMService:
 
             # PENDING TO LATER VERSION
             # Then process images for all pages
-            # image_nodes = self._extract_images_from_pdf(doc, file_path)
-            # nodes.extend(image_nodes)
+            image_nodes = self._extract_images_from_pdf(doc, file_path)
+            nodes.extend(image_nodes)
 
             return nodes
 
@@ -380,24 +464,52 @@ class EnhancedLLMService:
             if "doc" in locals():
                 doc.close()
 
+    # def _extract_text_from_pdf(
+    #     self, doc: fitz.Document, file_path: str
+    # ) -> List[TextNode]:
+    #     """Extract text content from PDF and create text nodes"""
+    #     text_nodes = []
+
+    #     for page_num in range(len(doc)):
+    #         page = doc[page_num]
+
+    #         # Process text
+    #         text = page.get_text("text")
+    #         if text.strip():
+    #             chunks = self.text_splitter.split_text(text)
+    #             for chunk in chunks:
+    #                 # Get text embedding from Ollama
+    #                 text_embedding = self.embedding_model.embed_query(chunk)
+
+    #                 # Create text node
+    #                 text_node = TextNode(
+    #                     text=chunk,
+    #                     embedding=text_embedding,
+    #                     metadata={
+    #                         "page": page_num + 1,
+    #                         "source": file_path,
+    #                         "total_pages": len(doc),
+    #                         "type": "text",
+    #                     },
+    #                 )
+    #                 text_nodes.append(text_node)
+
+    #     return text_nodes
+
     def _extract_text_from_pdf(
         self, doc: fitz.Document, file_path: str
     ) -> List[TextNode]:
-        """Extract text content from PDF and create text nodes"""
         text_nodes = []
-
         for page_num in range(len(doc)):
             page = doc[page_num]
-
-            # Process text
             text = page.get_text("text")
             if text.strip():
                 chunks = self.text_splitter.split_text(text)
                 for chunk in chunks:
-                    # Get text embedding from Ollama
-                    text_embedding = self.embedding_model.embed_query(chunk)
+                    text_embedding = np.array(self.embedding_model.embed_query(chunk))
+                    # Ensure embedding is normalized
+                    text_embedding = text_embedding / np.linalg.norm(text_embedding)
 
-                    # Create text node
                     text_node = TextNode(
                         text=chunk,
                         embedding=text_embedding,
@@ -409,7 +521,6 @@ class EnhancedLLMService:
                         },
                     )
                     text_nodes.append(text_node)
-
         return text_nodes
 
     def _extract_images_from_pdf(
@@ -457,10 +568,7 @@ class EnhancedLLMService:
                             img_analysis = self._analyze_image_with_llava(image_bytes)
 
                             # Get combined embedding with analysis
-                            image_embedding = self.process_image(
-                                pil_image, img_analysis
-                            )
-
+                            image_embedding = self.process_image(pil_image)
                             if image_embedding is not None:
                                 metadata = {
                                     "page": page_num + 1,
@@ -473,12 +581,9 @@ class EnhancedLLMService:
                                     "height": pil_image.size[1],
                                 }
 
-                                # Store both embeddings in metadata
-                                metadata["combined_embedding"] = True
-
                                 image_node = ImageNode(
                                     image=img_str,
-                                    embedding=image_embedding,  # Combined embedding
+                                    embedding=image_embedding,
                                     metadata=metadata.copy(),
                                 )
                                 image_nodes.append(image_node)
@@ -519,9 +624,94 @@ class EnhancedLLMService:
             print(f"Error in process_pdf: {e}")
             raise
 
-    def query_pdf(self, query: str) -> str:
+    def extract_content(self, source_content):
+        """
+        Extract text and images from source content
+        Returns tuple of (text, images_list)
+        """
+        try:
+            import json
+
+            # Find the splitting point between text and images array
+            split_point = source_content.find("', [")
+            if split_point != -1:
+                # Extract text (remove leading (' and trailing ')
+                text = source_content[2:split_point]
+
+                # Extract images array
+                images_str = source_content[
+                    split_point + 3 : -1
+                ]  # remove leading ', [ and trailing )
+
+                clean_str = images_str.replace("'", '"')
+
+                # Find the first [ and last ]
+                start_idx = clean_str.find("[")
+                end_idx = clean_str.rfind("]")
+
+                if start_idx != -1 and end_idx != -1:
+                    array_str = clean_str[start_idx : end_idx + 1]
+
+                    import json
+
+                    try:
+                        # Parse as JSON array
+                        images_list = json.loads(array_str)
+                    except json.JSONDecodeError as e:
+                        print(f"JSON parse error: {e}")
+                        return "", []
+
+            return text, images_list
+        except Exception as e:
+            print(f"Error extracting content: {e}")
+            return "", []
+
+    def process_tool_output(self, tool_output):
+        """Process tool output to separate text and images from ToolResponse format"""
+        try:
+            content = tool_output
+            if isinstance(content, str):
+                # Check if content is ToolResponse format
+                if "ToolResponse" in content:
+                    # Extract content value between content=' and ', source_nodes
+                    content_start = content.find("content='") + 9
+                    content_end = content.find("', source_nodes")
+                    if content_start != -1 and content_end != -1:
+                        text = content[content_start:content_end]
+
+                        # Look for images array
+                        images_start = content.find("images=")
+                        if images_start != -1:
+                            images_str = content[
+                                images_start + 7 : -1
+                            ]  # Get everything after images=
+                            try:
+                                import ast
+
+                                images = ast.literal_eval(images_str)
+                            except:
+                                images = []
+                        else:
+                            images = []
+
+                        return text, images
+
+                # If not ToolResponse format, return as plain text
+                return content, []
+
+            # If content is already parsed object with content and images
+            if hasattr(content, "content") and hasattr(content, "images"):
+                return content.content, content.images
+
+        except Exception as e:
+            print(f"Error processing tool output: {e}")
+            return "", []
+
+    def query_pdf(self, query: str) -> tuple[str, List[Dict]]:
         """Get response from agent for given query"""
         try:
+            text = None
+            images = []
             # Save user query to history
             chat_history.add_message("user", query)
 
@@ -529,7 +719,7 @@ class EnhancedLLMService:
             faq_answer = self.get_faq_answer(query)
             if faq_answer is not None:
                 chat_history.add_message("assistant", faq_answer)
-                return faq_answer
+                return faq_answer, []
 
             # Get agent response
             agent_response = self.agent.stream_chat(query)
@@ -542,6 +732,7 @@ class EnhancedLLMService:
             for source in agent_response.sources:
                 if isinstance(source, ToolOutput):
                     tool_outputs.append(source.content)
+                    text, images = self.process_tool_output(source.content)
 
             # Combine tool outputs if any
             if tool_outputs:
@@ -555,16 +746,16 @@ class EnhancedLLMService:
                 # Verify if chat_response is not empty
                 if chat_response and chat_response.strip():
                     chat_history.add_message("assistant", chat_response)
-                    return chat_response
+                    return chat_response, []
                 else:
                     # If still empty, provide a default response
                     default_response = "I apologize, but I'm not sure how to answer that question. Could you please rephrase or ask something else?"
                     chat_history.add_message("assistant", default_response)
-                    return default_response
+                    return default_response, []
 
             # Save existing answer to history
             chat_history.add_message("assistant", answer)
-            return answer
+            return text, images
 
         except Exception as e:
             print(f"Error in query_pdf: {e}")
@@ -686,7 +877,7 @@ class EnhancedLLMService:
                         question_embedding, faq_embedding
                     )
 
-                    if similarity > best_similarity and similarity > 0.5:
+                    if similarity > best_similarity and similarity > 0.7:
                         best_similarity = similarity
                         best_match = row["answer"]
 
@@ -796,37 +987,100 @@ class EnhancedLLMService:
         except Exception as e:
             print(f"Error setting up timezone tools: {e}")
 
-    def _search_pdf_content(self, query: str) -> str:
-        """Tool function để search và tóm tắt PDF content"""
+    def _search_pdf_content(self, query: str) -> ToolResponse:
+        """Tool function để search và tóm tắt PDF content với enhanced response"""
         try:
             if self.index is None or self.retriever is None:
-                return "No PDF has been processed yet. Please process a PDF first."
+                return self.ToolResponse(
+                    content="No PDF has been processed yet. Please process a PDF first.",
+                    source_nodes=[],
+                    metadata={"status": "no_index"},
+                    images=[],
+                )
 
             # Get results using retriever
-            results = self.retriever.retrieve(query)
+            retrieval_results = self.retriever.retrieve(query)
 
-            # Format text results
-            text_context = []
-            for result in results:
-                if isinstance(result.node, TextNode):
-                    text_context.append(f"{result.node.text}")
+            # Separate text and image results
+            text_results = []
+            image_results = []
+            source_nodes = []
 
-            # If no relevant content found, return a default message
-            if not text_context:
-                return "No relevant content found."
+            for result in retrieval_results:
+                # Create NodeWithScore for source tracking
+                source_nodes.append(
+                    NodeWithScore(node=result.node, score=getattr(result, "score", 1.0))
+                )
 
-            # Combine all text into a single string
-            context_text = "\n\n".join(text_context)
+                if isinstance(result.node, ImageNode):
+                    image_results.append(result.node)
+                else:
+                    text_results.append(result.node)
 
-            # Get final answer
+            # If no relevant content found, return empty response
+            if not text_results:
+                return self.ToolResponse(
+                    content="No relevant content found.",
+                    source_nodes=[],
+                    metadata={"query": query, "status": "no_results"},
+                    images=[],
+                )
+
+            # Create text context
+            context_text = "\n\n".join(node.text for node in text_results)
+
+            # Process images with metadata
+            formatted_images = [
+                {
+                    "filename": f"{node.metadata['source']}_{node.metadata['page']}",
+                    "image": node.image,
+                    "metadata": {
+                        "format": node.metadata["format"],
+                        "page": node.metadata["page"],
+                        "width": node.metadata["width"],
+                        "height": node.metadata["height"],
+                        "relevance_score": 1.0,
+                        "below_text": node.metadata.get("text_context", ""),
+                        "analysis": node.metadata.get("text_context", ""),
+                        "type": node.metadata["type"],
+                        "source": node.metadata["source"],
+                    },
+                }
+                for node in image_results
+            ]
+
+            # Generate answer using chat model
             answer = self.chat_model.invoke(
-                self.qa_prompt.format(context=context_text, question=query)
+                self.qa_prompt.format(
+                    context=context_text,
+                    question=query,
+                )
             ).content
 
-            return answer if answer else "No summary could be generated."
+            # Create enhanced response
+            response = self.ToolResponse(
+                content=answer,
+                source_nodes=source_nodes,
+                metadata={
+                    "query": query,
+                    "total_results": len(retrieval_results),
+                    "text_nodes": len(text_results),
+                    "image_nodes": len(image_results),
+                    "status": "success",
+                },
+                images=formatted_images,
+            )
+
+            return response
 
         except Exception as e:
-            return f"Error searching and summarizing PDF: {str(e)}"
+            error_msg = f"Error searching and summarizing PDF: {str(e)}"
+            return self.ToolResponse(
+                content=error_msg,
+                source_nodes=[],
+                metadata={"error": str(e), "status": "error"},
+                images=[],
+            )
 
     def clear_chat_history(self):
         """Clear conversation history"""
@@ -881,12 +1135,7 @@ class EnhancedLLMService:
         """Handle general conversation and casual queries"""
         try:
             # Prepare conversation prompt
-            conversation_prompt = f"""As a helpful and friendly AI assistant, please respond to this query in a natural, conversational way. 
-            If it's a greeting or casual conversation, respond appropriately. 
-            If it's a question, try to provide helpful information.
-            
-            Previous conversation context (if any):
-            {chat_history.get_recent(3)}
+            conversation_prompt = f"""As a helpful and friendly AI assistant, please respond to this query in a natural, conversational way.
             
             Current query: {query}
 
@@ -897,6 +1146,8 @@ class EnhancedLLMService:
             - If you don't know something, be honest about it
             - Keep responses natural and engaging
             - Use appropriate tone based on the query
+            - Be concise but informative
+            - Focus on answering the current query directly
             
             Response:"""
 
